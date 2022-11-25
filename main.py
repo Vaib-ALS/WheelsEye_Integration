@@ -38,8 +38,8 @@ def send_email(data):
     """
 
     # Creating message
-    text = text.format(table=tabulate(data, headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="pretty"))
-    html = html.format(table=tabulate(data, headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="html"))
+    text = text.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="pretty"))
+    html = html.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="html"))
 
     message = MIMEMultipart('alternative', None, [MIMEText(text), MIMEText(html, 'html')])
 

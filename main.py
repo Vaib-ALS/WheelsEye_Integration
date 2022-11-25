@@ -205,6 +205,8 @@ def update(send_email_now, change_day):
             data[num][1] = vehicleList[num]
         if send_email_now is True:
             send_email(data)
+    cursor.close()
+    dataBase.close()
 
 
 # Task scheduling

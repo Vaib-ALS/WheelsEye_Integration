@@ -15,17 +15,14 @@ def send_email(data):
     """Function to send an email using smtplib"""
     sender = 'trucking@als.group'
     password = 'Trucking@2021'
-    receiver = ''
+    receivers_mail = []
+    receiver = ", ".join(receivers_mail)
 
     text = """
     Hello,
-
     The following details have ben recorded in the last 24 hours:
-
     {table}
-
     Regards,
-
     """
 
     html = """
@@ -38,8 +35,8 @@ def send_email(data):
     """
 
     # Creating message
-    text = text.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="pretty"))
-    html = html.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source', 'Distance last 24 Hours', 'Average Speed', 'Location'], tablefmt="html"))
+    text = text.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source(Kms)', 'Distance last 24 Hours(Kms)', 'Average Speed(Km/hr)', 'Location'], tablefmt="pretty"))
+    html = html.format(table=tabulate(data, floatfmt='.3f', headers=['Date', 'Vehicle Number', 'Distance From Source(Kms)', 'Distance last 24 Hours(Kms)', 'Average Speed(Km/hr)', 'Location'], tablefmt="html"))
 
     message = MIMEMultipart('alternative', None, [MIMEText(text), MIMEText(html, 'html')])
 
@@ -59,8 +56,8 @@ def distance_formula(lat1, lon1, lat2, lon2):
     """Calculates distance using haversine formula"""
 
     # Average radius of earth
-    R = 6371
-    lat1, lon1, lat2, lon2 = radians(lat1), radians(lon1), radians(lat2), radians(lon2)
+    R = 6373
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
     dlat = lat2 - lat1
 
@@ -72,7 +69,7 @@ def distance_formula(lat1, lon1, lat2, lon2):
 
 
 def calculate_distance(co_ordinates):
-    """Takes an input of originLat, originLong, PreviousDayLat, PreviousDayLong, currentLat, currentLong as a tuple in the
+    """Takes an input of originLat, originLong, LastSeenLat, LastSeenLong, currentLat, currentLong as a tuple in the
     same specific order and returns a tuple of distance calculated from source location and last seen location"""
     orig_lat, orig_long, prev_lat, prev_long = co_ordinates[0], co_ordinates[1], co_ordinates[2], co_ordinates[3]
     current_lat, current_long = co_ordinates[4], co_ordinates[5]
@@ -83,18 +80,18 @@ def calculate_distance(co_ordinates):
     # No origin data available
     elif (orig_lat is None) and (orig_long is None):
         distance_source = 0
-        distance24hours = distance_formula(prev_lat, prev_long, current_lat, current_long)
-        distance_tuple = (distance_source, distance24hours)
+        distance_new = distance_formula(prev_lat, prev_long, current_lat, current_long)
+        distance_tuple = (distance_source, distance_new)
         return distance_tuple
     # Data is available
     else:
         distance_source = distance_formula(orig_lat, orig_long, current_lat, current_long)
-        distance24hours = distance_formula(prev_lat, prev_long, current_lat, current_long)
-        distance_tuple = (distance_source, distance24hours)
+        distance_new = distance_formula(prev_lat, prev_long, current_lat, current_long)
+        distance_tuple = (distance_source, distance_new)
         return distance_tuple
 
 
-def update(send_email_now, change_day):
+def update(send_email_now):
     """Function for daily updates of Live tracking of vehicles"""
     # Connecting with database
     dataBase = mysql.connector.connect(
@@ -117,8 +114,6 @@ def update(send_email_now, change_day):
                             originLong FLOAT,
                             lastSeenLat FLOAT,
                             lastSeenLong FLOAT,
-                            prevDayLat FLOAT,
-                            prevDayLong FLOAT,
                             PRIMARY KEY (id)
                             )"""
     distanceTableRecord = """CREATE TABLE IF NOT EXISTS DistanceTravelled (
@@ -127,6 +122,7 @@ def update(send_email_now, change_day):
                             vehicleID  INT NOT NULL,
                             distFromSource FLOAT NOT NULL,
                             dist24Hours FLOAT NOT NULL,
+                            distNew FLOAT NOT NULL,
                             avgSpeed FLOAT,
                             lastSeen VARCHAR(256),
                             PRIMARY KEY (id),
@@ -149,6 +145,9 @@ def update(send_email_now, change_day):
         data = []
         vehicleList = []
         for value in results:
+            # Date of new entry
+            new_date = datetime.strptime(value["dttime"], '%d %b, %Y, %I:%M %p')
+            yesterday_date = new_date - timedelta(days=1)
             # Check existing vehicles and add new vehicles
             sql = "SELECT id FROM Vehicles WHERE vehicleNum = %s"
             val = (value['vehicleNumber'], )
@@ -163,47 +162,58 @@ def update(send_email_now, change_day):
                 vehicle_id = cursor.lastrowid
             else:
                 vehicle_id = vehicle_id[0]
-            # fetching data from Vehicles as per ID to calculate distance travelled
-            cursor.execute("SELECT originLat, originLong, prevDayLat, prevDayLong FROM Vehicles WHERE id = %s", (vehicle_id,))
+            # Fetching data from Distance Travelled for the last 24 hours to calculate distance and average speed
+            cursor.execute(
+                "SELECT date, distNew FROM DistanceTravelled WHERE vehicleID = %s AND date > %s ORDER BY date ASC",
+                (vehicle_id, yesterday_date))
+            prev_data = list(cursor.fetchall())
+            # fetching data from Vehicles as per ID to calculate distance travelled from origin and last seen location
+            cursor.execute("SELECT originLat, originLong, lastSeenLat, lastSeenLong FROM Vehicles WHERE id = %s", (vehicle_id,))
             coordinates = list(cursor.fetchone())
+            # Adding current latitude and longitude
             coordinates.append(value['latitude'])
             coordinates.append(value['longitude'])
+            # Distance tuple received as (distance_source, distance_new)
             distances = calculate_distance(coordinates)
-            vehicleList.append(value['vehicleNumber'])
-            if send_email_now is True and change_day is True:
-                # Sending email, thus updating prev day latitude and longitude
-                cursor.execute(
-                    "UPDATE Vehicles SET lastSeenLat = %s, lastSeenLong = %s, prevDayLat = %s, prevDayLong = %s WHERE id = %s",
-                    (value['latitude'], value['longitude'], value['latitude'], value['longitude'], vehicle_id))
+            distance_source = distances[0]
+            distance_new = distances[1]
+            # If distance travelled is less than 500m
+            if (len(prev_data) > 0) and (distance_new < 0.5):
+                # No action taken
+                pass
             else:
+                vehicleList.append(value['vehicleNumber'])
                 # Updating last seen latitude and longitude
                 cursor.execute(
                     "UPDATE Vehicles SET lastSeenLat = %s, lastSeenLong = %s WHERE id = %s",
                     (value['latitude'], value['longitude'], vehicle_id))
-            yesterday_date = datetime.today() - timedelta(days=1)
-            cursor.execute("SELECT date FROM DistanceTravelled WHERE vehicleID = %s AND date > %s ORDER BY date ASC LIMIT 1", (vehicle_id, yesterday_date))
-            last_date = cursor.fetchone()
+                if len(prev_data) == 0:
+                    # No previous data is available
+                    distance_24hrs = 0
+                    speed = 1
+                else:
+                    time_taken = prev_data[-1][0] - prev_data[0][0]
+                    time_taken = time_taken.total_seconds() / 3600
+                    distance_list = [x[1] for x in prev_data]
+                    distance_24hrs = float(sum(distance_list)) + float(distance_new)
+                    if time_taken == 0:
+                        time_taken = 1
+                    speed = distance_24hrs / time_taken
 
-            # Calculating speed
-            try:
-                hours = datetime.strptime(value["dttime"], '%d %b, %Y, %I:%M %p') - last_date[0]
-                hours = hours.total_seconds() / 3600
-                speed = distances[1] / hours
-            except:
-                speed = 1
-            data.append((datetime.strptime(value["dttime"], '%d %b, %Y, %I:%M %p'), vehicle_id, distances[0], distances[1], speed, value['location']))
+                data.append((new_date, vehicle_id, distance_source, distance_24hrs, distance_new, speed, value['location']))
 
         # Insert new entry into DistanceTravelled table
-        sql = "INSERT INTO DistanceTravelled (date, vehicleID, distFromSource, dist24Hours, avgSpeed, lastSeen) values (%s, %s, %s, %s, %s, %s)"
+        sql = "INSERT INTO DistanceTravelled (date, vehicleID, distFromSource, dist24Hours, distNew, avgSpeed, lastSeen) values (%s, %s, %s, %s, %s, %s, %s)"
         cursor.executemany(sql, data)
 
         dataBase.commit()
 
         # Modifying data to generate report replacing the vehicle id with vehicle number
-        for num in range(len(data)):
-            data[num] = list(data[num])
-            data[num][1] = vehicleList[num]
         if send_email_now is True:
+            for num in range(len(data)):
+                data[num] = list(data[num])
+                data[num][1] = vehicleList[num]
+                del data[num][4]
             send_email(data)
     cursor.close()
     dataBase.close()
@@ -212,16 +222,15 @@ def update(send_email_now, change_day):
 # Task scheduling
 
 # Daily updates at every 09:30 am
-schedule.every().day.at("09:30").do(update, send_email_now=True, change_day=True)
+schedule.every().day.at("09:30").do(update, send_email_now=True)
 
 # Daily updates at every 06:00 pm
-schedule.every().day.at("18:00").do(update, send_email_now=True, change_day=False)
+schedule.every().day.at("18:00").do(update, send_email_now=True)
 
 # Hourly updates every 1 hour without updating distance travelled in 24 hours, while updating average speed
-schedule.every(15).minutes.do(update, send_email_now=False, change_day=False)
+schedule.every(15).minutes.do(update, send_email_now=False)
 
 while True:
     # Checks whether a scheduled task is pending to run or not
     schedule.run_pending()
     time.sleep(1)
-

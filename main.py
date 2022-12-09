@@ -189,6 +189,8 @@ def update(send_email_now):
                             dist24Hours FLOAT NOT NULL,
                             distNew FLOAT NOT NULL,
                             avgSpeed FLOAT,
+                            currentLat FLOAT,
+                            currentLong FLOAT,
                             PRIMARY KEY (id),
                             FOREIGN KEY (vehicleID) REFERENCES Vehicles(id)
                             )"""
@@ -280,7 +282,7 @@ def update(send_email_now):
                     distance_mtd = float(sum([x[1] for x in mtd_data])) + float(distance_new)
                 
 
-                data.append((new_date, vehicle_id, distance_24hrs, distance_new, speed))
+                data.append((new_date, vehicle_id, distance_24hrs, distance_new, speed, value['latitude'], value['longitude']))
 
             # Creating mailing data
             cursor.execute("SELECT VehicleNum, location FROM Vehicles WHERE id = %s", (vehicle_id,))
@@ -288,7 +290,7 @@ def update(send_email_now):
             mail_data.append([new_date, vehicle_data[1], vehicle_data[0], round(speed, 2), round(distance_24hrs), round(distance_mtd)])
 
         # Insert new entry into DistanceTravelled table
-        sql = "INSERT INTO DistanceTravelled (date, vehicleID, dist24Hours, distNew, avgSpeed) values (%s, %s, %s, %s, %s)"
+        sql = "INSERT INTO DistanceTravelled (date, vehicleID, dist24Hours, distNew, avgSpeed, currentLat, currentLong) values (%s, %s, %s, %s, %s, %s, %s)"
         cursor.executemany(sql, data)
 
         dataBase.commit()

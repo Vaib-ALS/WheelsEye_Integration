@@ -211,8 +211,8 @@ def update(send_email_now):
         for value in results:
             # Date of new entry
             new_date = datetime.strptime(value["dttime"], '%d %b, %Y, %I:%M %p')
-            yesterday_date = new_date - timedelta(days=1, hour=0, minute=0)
-            mtd_begining = new_date.replace(day=1)
+            yesterday_date = new_date - timedelta(days=1)
+            mtd_begining = new_date.replace(day=1, hour=0, minute=0)
             # Check existing vehicles and add new vehicles
             sql = "SELECT id FROM Vehicles WHERE vehicleNum = %s"
             val = (value['vehicleNumber'], )

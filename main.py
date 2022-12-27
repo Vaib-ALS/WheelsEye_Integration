@@ -194,6 +194,8 @@ def calculate_distance(co_ordinates):
             response = requests.get(url, params=params)
             json_response = response.json()
             distance = int(json_response['rows'][0]['elements'][0]['distance']['value']) / 1000.0
+            # 10% approximation
+            distance = distance * 1.10
             return distance
 
         except:
@@ -209,6 +211,8 @@ def calculate_distance(co_ordinates):
             c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
             distance = R * c
+            # 10% approximation
+            distance = distance * 1.10
         return distance
 
 

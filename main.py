@@ -1,21 +1,22 @@
 # Importing modules
+import folium
 import mysql.connector
 import pytz
 import requests
-import schedule
 import smtplib
-import time
+from branca.element import Figure
 from math import sin, cos, sqrt, atan2, radians
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 
 def send_email(mailing_data, cutoff_time):
     """Function to send an email using smtplib"""
-    sender = ''
-    password = ''
-    receivers_mail = []
+    sender = 'trucking@als.group'
+    password = 'Trucking@2021'
+    receivers_mail = ['vaibhav.s@als.group']
     receiver = ", ".join(receivers_mail)
 
     html = """
@@ -123,7 +124,20 @@ def send_email(mailing_data, cutoff_time):
     message['Subject'] = "Asset Sweating Report - MP360"
     message['From'] = sender
     message['To'] = receiver
+    filename = "location.html"
+
     message.attach(MIMEText(html, "html"))
+
+    # Attach the html file
+    with open("location.html", "rb") as attachment:
+        file_attachment = MIMEApplication(attachment.read())
+
+    file_attachment.add_header(
+        "Content-Disposition",
+        f"attachment; filename= {filename}",
+    )
+
+    message.attach(file_attachment)
 
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.ehlo()
@@ -133,28 +147,68 @@ def send_email(mailing_data, cutoff_time):
     server.quit()
 
 
+def plot_map(data):
+
+    figure = Figure(height=550, width=750)
+    map_india = folium.Map()
+    figure.add_child(map_india)
+    coordinate_list = []
+    for truck, geocode in data.items():
+        time_list = list(geocode.keys())
+        geocode_list = list(geocode.values())
+        coordinate_list.extend(geocode_list)
+        if len(geocode_list) > 1:
+            time_list = [x.strftime("%d-%m-%Y, %H:%M:%S") for x in time_list]
+            feature_group = folium.FeatureGroup(f"Vehicle: {truck}")
+            folium.vector_layers.PolyLine(geocode_list, popup=f'<b>Path of {truck}</b>', tooltip=truck, weight=4, opacity=1).add_to(feature_group)
+            marker_loc = [x for x in geocode_list]
+            for x in range(len(time_list)):
+                folium.Marker(location=marker_loc[x], popup=time_list[x], icon=folium.Icon(color='green', icon='truck', prefix='fa')).add_to(feature_group)
+            map_india.add_child(feature_group)
+    folium.LayerControl().add_to(map_india)
+    sw = list(min(coordinate_list))
+    ne = list(max(coordinate_list))
+    map_india.fit_bounds([sw, ne])
+    figure.save('location.html')
+
+
 def calculate_distance(co_ordinates):
     """Takes an input of LastSeenLat, LastSeenLong, currentLat, currentLong as a tuple in the same specific order,
     and returns the distance calculated from last seen location"""
     prev_lat, prev_long, current_lat, current_long = co_ordinates[0], co_ordinates[1], co_ordinates[2], co_ordinates[3]
+
     # No previous data available
     if (prev_lat is None) and (prev_long is None):
         return 0
     # Data is available
     else:
-        # Calculating distance with haversine formula
+        try:
+            # Calculate distance with  Google Distance Matrix API
+            url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+            params = {"origins": str(prev_lat) + " " + str(prev_long),
+                      "destinations": str(current_lat) + " " + str(current_long),
+                      "transit_mode": "bus",
+                      "key": ""
+                      }
 
-        # Average radius of earth
-        R = 6373
-        lat1, lon1, lat2, lon2 = map(radians, [prev_lat, prev_long, current_lat, current_long])
-        dlon = lon2 - lon1
-        dlat = lat2 - lat1
+            response = requests.get(url, params=params)
+            json_response = response.json()
+            distance = int(json_response['rows'][0]['elements'][0]['distance']['value']) / 1000.0
+            return distance
 
-        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        except:
+            # Calculating distance with haversine formula if Google Distance Matrix API fails.
 
-        # Multiplied by 1.05 for 5 percent approximation of distance calculated for inaccuracy.
-        distance = 1.05 * R * c
+            # Average radius of earth
+            R = 6373
+            lat1, lon1, lat2, lon2 = map(radians, [prev_lat, prev_long, current_lat, current_long])
+            dlon = lon2 - lon1
+            dlat = lat2 - lat1
+
+            a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+            c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+            distance = R * c
         return distance
 
 
@@ -163,7 +217,7 @@ def update(send_email_now):
     # Connecting with database
     dataBase = mysql.connector.connect(
         host="localhost",
-        user="root",
+        user="",
         passwd=""
     )
 
@@ -210,6 +264,7 @@ def update(send_email_now):
         results = response.json()['data']['list']
         data = []
         mail_data = []
+        map_data = {}
         for value in results:
             # Date of new entry
             new_date = datetime.strptime(value["dttime"], '%d %b, %Y, %I:%M %p')
@@ -231,9 +286,12 @@ def update(send_email_now):
                 vehicle_id = vehicle_id[0]
             # Fetching data from Distance Travelled for the last 24 hours to calculate distance and average speed
             cursor.execute(
-                "SELECT date, distNew FROM DistanceTravelled WHERE vehicleID = %s AND date > %s ORDER BY date ASC",
+                "SELECT date, distNew, currentLat, currentLong FROM DistanceTravelled WHERE vehicleID = %s AND date > %s ORDER BY date ASC",
                 (vehicle_id, yesterday_date))
-            prev_data = list(cursor.fetchall())
+            received_data = list(cursor.fetchall())
+            prev_data = [(x[0], x[1]) for x in received_data]
+            map_data[value['vehicleNumber']] = {x[0]: (x[2], x[3]) for x in received_data}
+
             cursor.execute(
                 "SELECT date, distNew FROM DistanceTravelled WHERE vehicleID = %s AND date > %s ORDER BY date ASC",
                 (vehicle_id, mtd_begining))
@@ -262,25 +320,20 @@ def update(send_email_now):
                 cursor.execute(
                     "UPDATE Vehicles SET lastSeenLat = %s, lastSeenLong = %s WHERE id = %s",
                     (value['latitude'], value['longitude'], vehicle_id))
-                if (len(prev_data) == 0) and (len(mtd_data) == 0):
+                if len(prev_data) == 0:
                     # No previous data is available
                     distance_24hrs = 0
                     distance_mtd = 0
                     speed = 1
-                elif len(prev_data) == 0:
-                        distance_24hrs = 0
-                        speed = 1
-                        distance_mtd = float(sum([x[1] for x in mtd_data])) + float(distance_new)
                 else:
                     time_taken = prev_data[-1][0] - prev_data[0][0]
                     time_taken = time_taken.total_seconds() / 3600
                     distance_list = [x[1] for x in prev_data]
                     distance_24hrs = float(sum(distance_list)) + float(distance_new)
+                    distance_mtd = float(sum([x[1] for x in mtd_data])) + float(distance_new)
                     if time_taken == 0:
                         time_taken = 1
                     speed = distance_24hrs / time_taken
-                    distance_mtd = float(sum([x[1] for x in mtd_data])) + float(distance_new)
-                
 
                 data.append((new_date, vehicle_id, distance_24hrs, distance_new, speed, value['latitude'], value['longitude']))
 
@@ -296,6 +349,7 @@ def update(send_email_now):
         dataBase.commit()
         # Modifying data to generate report replacing the vehicle id with vehicle number
         if send_email_now is True:
+            plot_map(map_data)
             cutoff_time = max([mail_data[num][0] for num in range(len(mail_data))])
             cutoff_time = cutoff_time.strftime("%I:%M %p - %d-%b-%Y")
             for num in range(len(mail_data)):
@@ -316,23 +370,21 @@ def update(send_email_now):
     del distance_new
     del distance_24hrs
     del mail_data
-    del mtd_data
+    del received_data
+    del map_data
 
 
-# Task scheduling
+intz = pytz.timezone('Asia/Kolkata')
 
-# Daily updates at every 08:00 am
-schedule.every().day.at("08:02").do(update, send_email_now=True)
+cur = datetime.now(intz)
 
-# Daily updates at every 06:00 pm
-schedule.every().day.at("18:00").do(update, send_email_now=True)
+hour = cur.hour
+minute = cur.minute
 
-# Hourly updates every 1 hour without updating distance travelled in 24 hours, while updating average speed
-schedule.every(15).minutes.do(update, send_email_now=False)
-
-while True:
-    # Checks whether a scheduled task is pending to run or not
-    schedule.run_pending()
-    time.sleep(1) 
-
-    
+if hour == 8 and (00 <= minute <= 4):
+    update(send_email_now=True)
+elif hour == 18 and (00 <= minute <= 4):
+    update(send_email_now=True)
+else:
+    update(send_email_now=False)
+   
